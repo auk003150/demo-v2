@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vessel Tracking Visualization</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.3/dist/leaflet.css" />
+    <style>
+        #map {
+            height: 500px;
+            width: 100%;
+            z-index: 1;
+        }
+
+        .vessel-marker {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            border-radius: 50%;
+        }
+
+        .vessel-marker-cargo { background-color: #4CAF50; }
+        .vessel-marker-tanker { background-color: #F44336; }
+        .vessel-marker-passenger { background-color: #2196F3; }
+        .vessel-marker-container { background-color: #9C27B0; }
+        .vessel-marker-other { background-color: #607D8B; }
+
+        .custom-tooltip {
+            background-color: rgba(255, 255, 255, 0.9);
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 8px;
+            font-size: 14px;
+        }
+
+        .dark .custom-tooltip {
+            background-color: rgba(31, 41, 55, 0.9);
+            border-color: #4B5563;
+            color: #E5E7EB;
+        }
+
+        .dark-mode-transition {
+            transition: background-color 0.3s ease, color 0.3s ease;
+        }
+
+        /* Loading Spinner */
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-radius: 50%;
+            border-top: 4px solid #5D5CDE;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+        }
+
+        .dark .spinner {
+            border-color: rgba(255, 255, 255, 0.1);
+            border-top-color: #5D5CDE;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .vessel-list-item {
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .vessel-list-item:hover {
+            background-color: rgba(93, 92, 222, 0.1);
+        }
+
+        .vessel-list-item.active {
+            background-color: rgba(93, 92, 222, 0.2);
+            border-left: 3px solid #5D5CDE;
+        }
+
+        .dark .vessel-list-item:hover {
+            background-color: rgba(93, 92, 222, 0.2);
+        }
+
+        .dark .vessel-list-item.active {
+            background-color: rgba(93, 92, 222, 0.3);
+        }
+
+        /* Status indicators */
+        .status-indicator {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 6px;
+        }
+
+        .status-moving { background-color: #22c55e; }
+        .status-anchored { background-color: #eab308; }
+        .status-unknown { background-color: #94a3b8; }
+
+        /* Vessel table */
+        .vessel-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .vessel-table th {
+            position: sticky;
+            top: 0;
+            background-color: #f3f4f6;
+            z-index: 10;
+        }
+
+        .dark .vessel-table th {
+            background-color: #1f2937;
+        }
+
+        .vessel-table tr:nth-child(even) {
+            background-color: rgba(0, 0, 0, 0.02);
+        }
+
+        .dark .vessel-table tr:nth-child(even) {
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+    </style>
+</head>
+<body class="bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 dark-mode-transition min-h-screen">
+    <div class="container mx-auto px-4 py-6">
+        <h1 class="text-3xl font-bold mb-6 text-center text-indigo-600 dark:text-indigo-400">Fleet Vessel Tracking</h1>
+        
+        <!-- API Configuration Section -->
+        <div class="bg-gray-100 dark:bg-gray-800 rounded-lg p-4 mb-6 shadow-md">
+            <h2 class="text-xl font-semibold mb-4">API Configuration</h2>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label for="api-key" class="block text-sm font-medium mb-1">API Key</label>
+                    <input type="password" id="api-key" class="w-full px-3 py-2 text-base border border-gray-300 dark:border-gray-700 rounded dark:bg-gray-700 dark:text-white" placeholder="Enter your MyShipTracking API key">
+                </div>
+                <div class="flex items-end gap-2">
+                    <button id="track-fleet" class="bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 px-4 rounded dark-mode-transition">
+                        Track Fleet Vessels
+                    </button>
+                    <button id="auto-refresh" class="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded dark-mode-transition flex-shrink-0">
+                        Auto-Refresh
+                    </button>
+                    <div id="refresh-status" class="hidden items-center">
+                        <div class="spinner mr-2"></div>
+                        <span>Refreshing data...</span>
+                    </div>
+                </div>
+            </div>
+            <div id="api-message" class="mt-2 text-sm hidden"></div>
+        </div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-5 gap-6">
+            <!-- Vessel List Section -->
+            <div class="lg:col-span-2 bg-gray-100 dark:bg-gray-800 rounded-lg p-4 shadow-md">
+                <div class="flex justify-between items-center mb-4">
+                    <h2 class="text-xl font-semibold">Your Fleet Vessels</h2>
+                    <div class="relative">
+                        <input type="text" id="vessel-search" class="pl-8 pr-3 py-2 text-base border border-gray-300 dark:border-gray-700 rounded dark:bg-gray-700 dark:text-white" placeholder="Search vessels...">
+                        <svg class="absolute left-2 top-2.5 h-4 w-4 text-gray-500 dark:text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path>
+                        </svg>
+                    </div>
+                </div>
+                
+                <div class="bg-white dark:bg-gray-700 rounded border border-gray-200 dark:border-gray-600 overflow-hidden">
+                    <div class="p-3 bg-gray-50 dark:bg-gray-750 border-b border-gray-200 dark:border-gray-600 font-medium">
+                        <div class="flex justify-between">
+                            <span>Vessel Name</span>
+                            <span>Status</span>
+                        </div>
+                    </div>
+                    <div id="vessel-list" class="max-h-96 overflow-y-auto"></div>
+                </div>
+                
+                <div class="mt-4 text-sm text-gray-600 dark:text-gray-400">
+                    <p>Status indicators:</p>
+                    <div class="flex flex-wrap gap-4 mt-1">
+                        <div class="flex items-center">
+                            <span class="status-indicator status-moving"></span>
+                            <span>Moving</span>
+                        </div>
+                        <div class="flex items-center">
+                            <span class="status-indicator status-anchored"></span>
+                            <span>Anchored/Moored</span>
+                        </div>
+                        <div class="flex items-center">
+                            <span class="status-indicator status-unknown"></span>
+                            <span>Unknown</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Map Container & Details Section -->
+            <div class="lg:col-span-3">
+                <div class="bg-gray-100 dark:bg-gray-800 rounded-lg p-4 mb-6 shadow-md">
+                    <div id="map" class="rounded-lg shadow-inner"></div>
+                </div>
+                
+                <!-- Selected Vessel Information -->
+                <div id="vessel-info" class="bg-gray-100 dark:bg-gray-800 rounded-lg p-4 shadow-md hidden">
+                    <h2 class="text-xl font-semibold mb-4">Vessel Information</h2>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div>
+                            <h3 class="font-medium text-lg mb-2">Basic Details</h3>
+                            <ul class="space-y-2">
+                                <li><strong>Name:</strong> <span id="vessel-name">-</span></li>
+                                <li><strong>MMSI:</strong> <span id="vessel-mmsi">-</span></li>
+                                <li><strong>IMO:</strong> <span id="vessel-imo">-</span></li>
+                                <li><strong>Type:</strong> <span id="vessel-type">-</span></li>
+                                <li><strong>Status:</strong> <span id="vessel-status">-</span></li>
+                            </ul>
+                        </div>
+                        <div>
+                            <h3 class="font-medium text-lg mb-2">Navigation</h3>
+                            <ul class="space-y-2">
+                                <li><strong>Position:</strong> <span id="vessel-position">-</span></li>
+                                <li><strong>Speed:</strong> <span id="vessel-speed">-</span> knots</li>
+                                <li><strong>Course:</strong> <span id="vessel-course">-</span>°</li>
+                                <li><strong>Destination:</strong> <span id="vessel-destination">-</span></li>
+                                <li><strong>ETA:</strong> <span id="vessel-eta">-</span></li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="mt-4">
+                        <h3 class="font-medium text-lg mb-2">Last 24 Hours Route</h3>
+                        <div id="vessel-route" class="text-sm">
+                            <!-- Will be populated with route data -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Vessels Table View -->
+        <div class="mt-6 bg-gray-100 dark:bg-gray-800 rounded-lg p-4 shadow-md">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-semibold">Fleet Overview</h2>
+                <button id="toggle-table-view" class="text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 text-sm font-medium">
+                    Hide Table
+                </button>
+            </div>
+            <div id="vessel-table-container" class="overflow-x-auto">
+                <table class="vessel-table text-sm">
+                    <thead>
+                        <tr class="text-left border-b border-gray-300 dark:border-gray-700">
+                            <th class="py-3 px-4">Vessel Name</th>
+                            <th class="py-3 px-4">Type</th>
+                            <th class="py-3 px-4">Status</th>
+                            <th class="py-3 px-4">Position</th>
+                            <th class="py-3 px-4">Speed</th>
+                            <th class="py-3 px-4">Course</th>
+                            <th class="py-3 px-4">Destination</th>
+                            <th class="py-3 px-4">Last Updated</th>
+                        </tr>
+                    </thead>
+                    <tbody id="vessel-table-body"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.3/dist/leaflet.js"></script>
+    <script>
+        // Dark mode detection
+        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+            document.documentElement.classList.add('dark');
+        }
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', event => {
+            if (event.matches) {
+                document.documentElement.classList.add('dark');
+            } else {
+                document.documentElement.classList.remove('dark');
+            }
+        });
+
+        // Fleet data - your vessels list
+        const fleetVessels = [
+            "CMA CGM HERMES",
+            "CMA CGM J. MADISON",
+            "CMA CGM ZEPHYR",
+            "OOCL KOREA",
+            "COSCO DEVELOPMENT",
+            "CMA CGM T. ROOSEVELT",
+            "COSCO SHIPPING AZALEA",
+            "COSCO BELGIUM",
+            "EVER CLEAR",
+            "UNI-PREMIER",
+            "CMA CGM ALMAVIVA",
+            "CMA CGM T. JEFFERSON",
+            "CMA CGM CHRISTOPHE COLOMB",
+            "CNC PANTHER",
+            "CMA CGM ELBE",
+            "CMA CGM MISSOURI",
+            "CMA CGM SYMI",
+            "CMA CGM PANAMA",
+            "EVER OUTDO",
+            "CMA CGM A. LINCOLN",
+            "OOCL BRUSSELS",
+            "EVER PEARL",
+            "EVER OASIS",
+            "CMA CGM CHILE",
+            "EVER ONWARD",
+            "CSCL BOHAI SEA",
+            "CMA CGM GALAPAGOS",
+            "COSCO SHIPPING PEONY",
+            "CMA CGM RIGOLETTO",
+            "SPIL NIRMALA",
+            "COSCO OCEANIA",
+            "MERATUS JAYAGIRI",
+            "EVER WIN",
+            "OOCL BANGKOK",
+            "APL SENTOSA",
+            "CMA CGM NORMA",
+            "CMA CGM LAPEROUSE",
+            "EVER LOYAL",
+            "CSCL YELLOW SEA",
+            "EVER FEAT",
+            "COSCO HARMONY",
+            "APL DANUBE",
+            "CSCL SUMMER",
+            "CNC PUMA",
+            "COSCO SHIPPING ANDES",
+            "EVER FRONT",
+            "COSCO SPAIN",
+            "OOCL POLAND",
+            "EVER FORTUNE",
+            "CMA CGM THAMES",
+            "COSCO ENGLAND",
+            "CMA CGM OSIRIS",
+            "COSCO SHIPPING DENALI",
+            "CMA CGM J. ADAMS"
+        ];
+
+        // Initialize global variables
+        const map = L.map('map').setView([10, 120], 3); // Starting in Asia Pacific region
+        let autoRefreshInterval = null;
+        let markers = [];
+        let activeVesselId = null;
+        let trackedVessels = [];
+        
+        // Load map layers based on dark/light mode
+        function updateMapLayers() {
+            map.eachLayer(layer => {
+                if (layer instanceof L.TileLayer) {
+                    map.removeLayer(layer);
+                }
+            });
+            
+            if (document.documentElement.classList.contains('dark')) {
+                // Dark mode tile layer
+                L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+                    subdomains: 'abcd',
+                    maxZoom: 19
+                }).addTo(map);
+            } else {
+                // Light mode tile layer
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+                    maxZoom: 19
+                }).addTo(map);
+            }
+        }
+        
+        updateMapLayers();
+        
+        // Handle dark/light mode switching for map
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', updateMapLayers);
+
+        // Create a vessel marker based on type
+        function createVesselMarker(vessel) {
+            let type = getVesselType(vessel.name);
+            
+            // Create HTML for the marker
+            const markerHtml = `<div class="vessel-marker vessel-marker-${type}" data-type="${type}">${vessel.name ? vessel.name.charAt(0) : '?'}</div>`;
+            
+            // Create custom icon
+            const icon = L.divIcon({
+                html: markerHtml,
+                className: '',
+                iconSize: [24, 24],
+                iconAnchor: [12, 12]
+            });
+            
+            // Create marker and add to map
+            const marker = L.marker([vessel.latitude, vessel.longitude], { icon: icon });
+            
+            // Add popup with vessel info
+            const popupContent = `
+                <div class="custom-tooltip">
+                    <div><strong>${vessel.name || 'Unknown vessel'}</strong></div>
+                    <div>MMSI: ${vessel.mmsi || 'N/A'}</div>
+                    <div>Type: ${type.charAt(0).toUpperCase() + type.slice(1)}</div>
+                    <div>Speed: ${vessel.speed || '0'} knots</div>
+                    <div class="text-sm mt-1">Click for more details</div>
+                </div>
+            `;
+            
+            marker.bindPopup(popupContent);
+            
+            // Handle click event to show vessel details
+            marker.on('click', () => {
+                showVesselDetails(vessel);
+                setActiveVessel(vessel.id);
+            });
+            
+            return { marker, type };
+        }
+
+        // Show vessel details in the info panel
+        function showVesselDetails(vessel) {
+            const infoPanel = document.getElementById('vessel-info');
+            infoPanel.classList.remove('hidden');
+            
+            document.getElementById('vessel-name').textContent = vessel.name || 'Unknown';
+            document.getElementById('vessel-mmsi').textContent = vessel.mmsi || 'N/A';
+            document.getElementById('vessel-imo').textContent = vessel.imo || 'N/A';
+            document.getElementById('vessel-type').textContent = getVesselType(vessel.name).charAt(0).toUpperCase() + getVesselType(vessel.name).slice(1);
+            document.getElementById('vessel-status').textContent = vessel.navStatus || 'Unknown';
+            document.getElementById('vessel-position').textContent = `${vessel.latitude.toFixed(5)}, ${vessel.longitude.toFixed(5)}`;
+            document.getElementById('vessel-speed').textContent = vessel.speed || '0';
+            document.getElementById('vessel-course').textContent = vessel.course || '0';
+            document.getElementById('vessel-destination').textContent = vessel.destination || 'Not specified';
+            document.getElementById('vessel-eta').textContent = vessel.eta || 'Unknown';
+            
+            // Show route history if available
+            const routeElement = document.getElementById('vessel-route');
+            if (vessel.routeHistory && vessel.routeHistory.length > 0) {
+                const routePoints = vessel.routeHistory.map(point => {
+                    const date = new Date(point.timestamp);
+                    return `<div class="py-1 border-b border-gray-200 dark:border-gray-700">
+                        <div class="flex justify-between">
+                            <span>${date.toLocaleString()}</span>
+                            <span>Position: ${point.latitude.toFixed(4)}, ${point.longitude.toFixed(4)}</span>
+                            <span>Speed: ${point.speed} knots</span>
+                        </div>
+                    </div>`;
+                }).join('');
+                routeElement.innerHTML = routePoints;
+            } else {
+                routeElement.innerHTML = '<p class="italic text-gray-500 dark:text-gray-400">No route history available for the last 24 hours.</p>';
+            }
+        }
+
+        // Set active vessel in the list
+        function setActiveVessel(vesselId) {
+            // Remove active class from all items
+            document.querySelectorAll('.vessel-list-item').forEach(el => {
+                el.classList.remove('active');
+            });
+            
+            // Add active class to the selected item
+            if (vesselId) {
+                const listItem = document.getElementById(`vessel-item-${vesselId}`);
+                if (listItem) {
+                    listItem.classList.add('active');
+                    // Scroll to the active item
+                    listItem.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+                }
+                activeVesselId = vesselId;
+            } else {
+                activeVesselId = null;
+            }
+        }
+
+        // Get vessel type based on name (for the prototype)
+        function getVesselType(name) {
+            if (!name) return 'other';
+            name = name.toUpperCase();
+            
+            if (name.includes('CMA CGM') || name.includes('APL')) {
+                return 'container';
+            } else if (name.includes('COSCO') || name.includes('OOCL') || name.includes('EVER')) {
+                return 'container';
+            } else if (name.includes('TANKER')) {
+                return 'tanker';
+            } else if (name.includes('PASSENGER')) {
+                return 'passenger';
+            } else {
+                return 'cargo';
+            }
+        }
+
+        // Determine vessel status
+        function getVesselStatus(speed) {
+            if (speed === undefined || speed === null) return 'unknown';
+            speed = parseFloat(speed);
+            if (speed > 1.0) return 'moving';
+            return 'anchored';
+        }
+
+        // Fetch vessels from API (in prototype, this uses mock data)
+        async function fetchFleetVessels() {
+            const apiKey = document.getElementById('api-key').value;
+            const messageElement = document.getElementById('api-message');
+            const refreshStatus = document.getElementById('refresh-status');
+            
+            if (!apiKey) {
+                messageElement.textContent = 'Please enter your API key.';
+                messageElement.className = 'mt-2 text-sm text-red-600 dark:text-red-400';
+                messageElement.classList.remove('hidden');
+                return;
+            }
+            
+            // Show loading state
+            refreshStatus.classList.remove('hidden');
+            refreshStatus.classList.add('flex');
+            messageElement.classList.add('hidden');
+            
+            try {
+                // This is a placeholder for the actual API call
+                // You'll need to replace this with your actual API endpoints and parameters
+                
+                /*
+                // In a real implementation, you would fetch data for each vessel by name or IMO
+                const vesselPromises = fleetVessels.map(vesselName => 
+                    fetch(`https://api.myshiptracking.com/vessels/by-name/${encodeURIComponent(vesselName)}`, {
+                        method: 'GET',
+                        headers: {
+                            'Authorization': `Bearer ${apiKey}`,
+                            'Content-Type': 'application/json'
+                        }
+                    }).then(res => res.json())
+                );
+                
+                const vesselsData = await Promise.all(vesselPromises);
+                */
+                
+                // For the prototype, we'll use mock data
+                const mockData = generateMockFleetData();
+                
+                // Update tracked vessels
+                trackedVessels = mockData;
+                
+                // Clear existing markers
+                clearMarkers();
+                
+                // Add new markers
+                mockData.forEach(vessel => {
+                    const { marker, type } = createVesselMarker(vessel);
+                    markers.push({ marker, type, vessel });
+                    marker.addTo(map);
+                });
+                
+                // Update the vessel list and table
+                updateVesselList(mockData);
+                updateVesselTable(mockData);
+                
+                // Adjust map view to fit all markers
+                const bounds = L.latLngBounds(mockData.map(v => [v.latitude, v.longitude]));
+                if (bounds.isValid()) {
+                    map.fitBounds(bounds, { padding: [50, 50] });
+                }
+                
+                // Show success message
+                messageElement.textContent = `Successfully loaded ${mockData.length} fleet vessels.`;
+                messageElement.className = 'mt-2 text-sm text-green-600 dark:text-green-400';
+                messageElement.classList.remove('hidden');
+                
+            } catch (error) {
+                // Show error message
+                messageElement.textContent = `Error fetching vessel data: ${error.message}`;
+                messageElement.className = 'mt-2 text-sm text-red-600 dark:text-red-400';
+                messageElement.classList.remove('hidden');
+                console.error('Error fetching vessel data:', error);
+            } finally {
+                // Hide loading state
+                refreshStatus.classList.add('hidden');
+                refreshStatus.classList.remove('flex');
+            }
+        }
+
+        // Clear all markers from the map
+        function clearMarkers() {
+            markers.forEach(({ marker }) => {
+                map.removeLayer(marker);
+            });
+            markers = [];
+            
+            // Hide vessel info panel
+            document.getElementById('vessel-info').classList.add('hidden');
+        }
+        
+        // Toggle auto-refresh
+        function toggleAutoRefresh() {
+            const button = document.getElementById('auto-refresh');
+            
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+                autoRefreshInterval = null;
+                button.textContent = 'Auto-Refresh';
+                button.classList.remove('bg-red-600', 'hover:bg-red-700');
+                button.classList.add('bg-green-600', 'hover:bg-green-700');
+            } else {
+                fetchFleetVessels(); // Fetch immediately
+                autoRefreshInterval = setInterval(fetchFleetVessels, 60000); // Then every minute
+                button.textContent = 'Disable Auto-Refresh';
+                button.classList.remove('bg-green-600', 'hover:bg-green-700');
+                button.classList.add('bg-red-600', 'hover:bg-red-700');
+            }
+        }
+
+        // Update the vessel list in the UI
+        function updateVesselList(vessels) {
+            const listContainer = document.getElementById('vessel-list');
+            listContainer.innerHTML = '';
+            
+            if (vessels.length === 0) {
+                listContainer.innerHTML = '<div class="p-4 text-center text-gray-500 dark:text-gray-400">No vessels found</div>';
+                return;
+            }
+            
+            // Sort by name
+            vessels.sort((a, b) => a.name.localeCompare(b.name));
+            
+            vessels.forEach(vessel => {
+                const statusClass = `status-${getVesselStatus(vessel.speed)}`;
+                const item = document.createElement('div');
+                item.id = `vessel-item-${vessel.id}`;
+                item.className = `vessel-list-item p-3 border-b border-gray-200 dark:border-gray-600 ${activeVesselId === vessel.id ? 'active' : ''}`;
+                item.innerHTML = `
+                    <div class="flex justify-between">
+                        <span class="font-medium">${vessel.name}</span>
+                        <span class="flex items-center">
+                            <span class="status-indicator ${statusClass}"></span>
+                            ${vessel.speed > 1.0 ? vessel.speed + ' kts' : 'Stopped'}
+                        </span>
+                    </div>
+                    <div class="text-xs text-gray-500 dark:text-gray-400 mt-1">${vessel.destination || 'No destination'}</div>
+                `;
+                
+                item.addEventListener('click', () => {
+                    showVesselDetails(vessel);
+                    setActiveVessel(vessel.id);
+                    
+                    // Find and center the map on the vessel marker
+                    const markerInfo = markers.find(m => m.vessel.id === vessel.id);
+                    if (markerInfo) {
+                        map.setView([vessel.latitude, vessel.longitude], 10);
+                        markerInfo.marker.openPopup();
+                    }
+                });
+                
+                listContainer.appendChild(item);
+            });
+        }
+
+        // Update the vessel table
+        function updateVesselTable(vessels) {
+            const tableBody = document.getElementById('vessel-table-body');
+            tableBody.innerHTML = '';
+            
+            vessels.forEach(vessel => {
+                const statusClass = `status-${getVesselStatus(vessel.speed)}`;
+                const row = document.createElement('tr');
+                row.className = 'border-b border-gray-200 dark:border-gray-700';
+                
+                row.innerHTML = `
+                    <td class="py-3 px-4 font-medium">${vessel.name}</td>
+                    <td class="py-3 px-4">${getVesselType(vessel.name).charAt(0).toUpperCase() + getVesselType(vessel.name).slice(1)}</td>
+                    <td class="py-3 px-4">
+                        <div class="flex items-center">
+                            <span class="status-indicator ${statusClass}"></span>
+                            ${vessel.navStatus || (vessel.speed > 1.0 ? 'Underway' : 'Stopped')}
+                        </div>
+                    </td>
+                    <td class="py-3 px-4">${vessel.latitude.toFixed(4)}, ${vessel.longitude.toFixed(4)}</td>
+                    <td class="py-3 px-4">${vessel.speed} knots</td>
+                    <td class="py-3 px-4">${vessel.course}°</td>
+                    <td class="py-3 px-4">${vessel.destination || 'Not specified'}</td>
+                    <td class="py-3 px-4">${new Date(vessel.lastUpdate).toLocaleString()}</td>
+                `;
+                
+                row.addEventListener('click', () => {
+                    showVesselDetails(vessel);
+                    setActiveVessel(vessel.id);
+                    
+                    // Find and center the map on the vessel marker
+                    const markerInfo = markers.find(m => m.vessel.id === vessel.id);
+                    if (markerInfo) {
+                        map.setView([vessel.latitude, vessel.longitude], 10);
+                        markerInfo.marker.openPopup();
+                    }
+                });
+                
+                row.style.cursor = 'pointer';
+                tableBody.appendChild(row);
+            });
+        }
+
+        // Search vessels by name
+        function searchVessels() {
+            const searchTerm = document.getElementById('vessel-search').value.toLowerCase();
+            const filteredVessels = trackedVessels.filter(vessel => 
+                vessel.name.toLowerCase().includes(searchTerm)
+            );
+            
+            updateVesselList(filteredVessels);
+        }
+
+        // Toggle the table view
+        function toggleTableView() {
+            const tableContainer = document.getElementById('vessel-table-container');
+            const toggleButton = document.getElementById('toggle-table-view');
+            
+            if (tableContainer.style.display === 'none') {
+                tableContainer.style.display = 'block';
+                toggleButton.textContent = 'Hide Table';
+            } else {
+                tableContainer.style.display = 'none';
+                toggleButton.textContent = 'Show Table';
+            }
+        }
+        
+        // Generate mock fleet data for the prototype
+        function generateMockFleetData() {
+            const vessels = [];
+            
+            // Location clusters (approximating major shipping areas)
+            const locationClusters = [
+                { lat: 22.3, lon: 114.2, radius: 3 },  // Hong Kong
+                { lat: 1.3, lon: 103.8, radius: 2 },   // Singapore
+                { lat: 35.6, lon: 139.8, radius: 2 },  // Tokyo
+                { lat: 51.5, lon: 0.1, radius: 2 },    // English Channel
+                { lat: 40.7, lon: -74.0, radius: 2 },  // New York
+                { lat: 37.8, lon: -122.4, radius: 2 }, // San Francisco
+                { lat: 6.9, lon: 79.9, radius: 2 },    // Colombo
+                { lat: 29.8, lon: -95.0, radius: 2 },  // Houston
+                { lat: -33.9, lon: 151.2, radius: 2 }, // Sydney
+            ];
+            
+            // Possible destinations
+            const destinations = [
+                'SINGAPORE', 'HONG KONG', 'SHANGHAI', 'BUSAN', 'ROTTERDAM', 
+                'ANTWERP', 'HAMBURG', 'LOS ANGELES', 'LONG BEACH', 'NEW YORK', 
+                'NINGBO', 'SHENZHEN', 'DUBAI', 'PORT KLANG', 'KAOHSIUNG',
+                'COLOMBO', 'TOKYO', 'SYDNEY', 'VANCOUVER', 'HOUSTON'
+            ];
+            
+            // Possible navigation statuses
+            const navStatuses = [
+                'Under way using engine', 'At anchor', 'Not under command', 
+                'Restricted manoeuverability', 'Constrained by her draught', 
+                'Moored', 'Aground', 'Engaged in Fishing', 'Under way sailing'
+            ];
+            
+            // Create mock vessels for each fleet vessel
+            fleetVessels.forEach((name, i) => {
+                // Choose a random location cluster
+                const cluster = locationClusters[Math.floor(Math.random() * locationClusters.length)];
+                const lat = cluster.lat + (Math.random() * 2 - 1) * cluster.radius;
+                const lon = cluster.lon + (Math.random() * 2 - 1) * cluster.radius;
+                
+                // Random values for other properties
+                const speed = Math.random() > 0.2 ? (Math.random() * 20 + 5).toFixed(1) : 0;
+                const course = Math.floor(Math.random() * 360);
+                const destination = Math.random() > 0.1 ? destinations[Math.floor(Math.random() * destinations.length)] : '';
+                const navStatus = navStatuses[Math.floor(Math.random() * navStatuses.length)];
+                
+                // Create a mock vessel object
+                const vessel = {
+                    id: i + 1,
+                    name: name,
+                    mmsi: Math.floor(Math.random() * 1000000000).toString(),
+                    imo: Math.floor(Math.random() * 10000000).toString(),
+                    shipType: getVesselType(name),
+                    latitude: lat,
+                    longitude: lon,
+                    speed: speed,
+                    course: course,
+                    navStatus: navStatus,
+                    destination: destination,
+                    eta: destination ? new Date(Date.now() + Math.random() * 7 * 24 * 60 * 60 * 1000).toLocaleDateString() : '',
+                    lastUpdate: new Date(Date.now() - Math.random() * 3 * 60 * 60 * 1000).toISOString()
+                };
+                
+                // Generate route history for some vessels
+                if (Math.random() > 0.3) {
+                    const routePoints = [];
+                    const hoursBack = 24;
+                    const pointsCount = Math.floor(Math.random() * 10) + 5;
+                    
+                    for (let j = 0; j < pointsCount; j++) {
+                        const hoursAgo = (hoursBack / pointsCount) * (pointsCount - j);
+                        routePoints.push({
+                            latitude: vessel.latitude - (Math.random() * 0.5 - 0.25),
+                            longitude: vessel.longitude - (Math.random() * 0.5 - 0.25),
+                            speed: (parseFloat(vessel.speed) + (Math.random() * 4 - 2)).toFixed(1),
+                            timestamp: new Date(Date.now() - hoursAgo * 60 * 60 * 1000).toISOString()
+                        });
+                    }
+                    
+                    vessel.routeHistory = routePoints;
+                }
+                
+                vessels.push(vessel);
+            });
+            
+            return vessels;
+        }
+
+        // Event Listeners
+        document.getElementById('track-fleet').addEventListener('click', fetchFleetVessels);
+        document.getElementById('auto-refresh').addEventListener('click', toggleAutoRefresh);
+        document.getElementById('toggle-table-view').addEventListener('click', toggleTableView);
+        
+        // Search functionality
+        document.getElementById('vessel-search').addEventListener('input', searchVessels);
+        
+        // Initialize the app by loading the fleet vessels
+        setTimeout(() => {
+            // Auto-populate API key for demo purposes (in production this would be user-provided)
+            document.getElementById('api-key').value = 'demo-api-key-12345';
+            fetchFleetVessels();
+        }, 500);
+    </script>
+</body>
+</html>
